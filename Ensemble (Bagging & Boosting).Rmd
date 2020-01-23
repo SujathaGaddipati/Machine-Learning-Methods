@@ -1,0 +1,175 @@
+---
+title: "Ensemble modelling (Bagging & Boosting)"
+author: "Sujatha"
+date: "22/01/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+__Loading the packages and the dataset Hitters from the ISLR package__
+```{r}
+pacman::p_load(ISLR, data.table, ggplot2, leaps, dataPreparation, tree, gbm, randomForest)
+
+Hitters <- as.data.frame(Hitters)
+```
+
+__Descriptive analysis of the dataset__
+```{r}
+## Displays data types for the variables in the dataset
+str(Hitters)
+
+## To check the # of missing values in labeled column and removed them as they were not many
+sum(is.na(Hitters$Salary))
+hitters <- subset(Hitters, is.na(Hitters$Salary) == FALSE)
+hitters <- setDT(hitters)
+
+## It is important to check the data distribution of the variables and transform them if needed
+ggplot(data = hitters, aes(hitters$Salary)) + geom_histogram(bins = 50, fill = 'orange', col = 'grey' )
+
+## With the salary histogram distribution graph it can be seen that it is more concentrated between 0 to 1000 i.e left skewed. Log transformation of the salary reduces the skewness in the data and provides us with near to normal distribution.
+
+hitters <- hitters[, log_Salary:= log(hitters$Salary)] 
+ggplot(data = hitters, aes(hitters$log_Salary)) + geom_histogram(bins = 50, fill = 'orange', col = 'grey' )
+
+## Before the data was log transformed, the skewness was 1.57 after the data was log transformed the skewness decreased to -0.17. Now we will remove the Salary variable and keep the log transformed variable for further analysis.
+
+hitters <- hitters[, -(19)]
+```
+
+__Lets see some relation between our labelled variable and other variables__
+```{r}
+## Scatterplot with Hits on the y-axis and Years on the x-axis, color coded using the log Salary variable
+ggplot(data = hitters, aes(x = hitters$Years, y = hitters$Hits, fill = log_Salary)) +
+         geom_point(alpha = 0.6)
+```
+__we observed hits being more concentrated when years of experience is low.__
+
+__Lets run some regression using regsubsets and determine the best combination of variables using bic to predict palyers salary__
+```{r}
+rgsubset_model <- regsubsets(log_Salary ~ ., data = hitters, nbest = 1, nvmax = 19, method = "exhaustive")
+
+sum = summary(rgsubset_model)
+names(sum)
+sum$bic
+sum
+```
+__For all the models we get negative bic values which implies there is very less information loss associated with the models. The model with the highest negative value is model 6th, with "157.9207". This model gives us the lowest information loss. In our 6th model the predictors are Atbat, hits, walks, years, Chits, division.__
+
+__Now lets train our model using trees and determine the rules to predict salaries__
+```{r}
+set.seed(42)
+train.index <- sample(1:nrow(hitters), 0.8 * nrow(hitters))
+test.index <- setdiff(1:nrow(hitters), train.index)
+
+train <- hitters[train.index, ]
+test <- hitters[test.index, ]
+```
+
+__Lets see regression model accuracy__
+```{r}
+## Model
+lgmodel <- lm(log_Salary ~ AtBat + Hits + Walks + Years + CHits + Division, data = train)
+summary(lgmodel)
+
+## Calulating the mean square error for the model
+yhat <- predict(lgmodel, newdata = test)
+hitters.test <- test[, log_Salary]
+mse <- mean((yhat-hitters.test)^2)
+mse
+```
+
+
+
+__regression tree of log Salary using only Years and Hits variables from the training data set__
+```{r}
+tree.hitters <- tree(log_Salary~Years+Hits, data = train)
+summary(tree.hitters)
+
+plot(tree.hitters)
+text(tree.hitters, pretty = 0)
+
+##Cross-validation to choose the optimal amount of nodes with lowest errors
+cv.hitters <- cv.tree(tree.hitters)
+plot(cv.hitters$size, cv.hitters$dev, type = 'b')
+
+## lowest deviance is at node 4. So further trees would be with 4 nodes
+
+prune.hitters <- prune.tree(tree.hitters, best = 4)
+plot(prune.hitters)
+text(prune.hitters, pretty = 0)
+
+## Calulating the mean square error for the model
+yhat <- predict(prune.hitters, newdata = test)
+hitters.test <- test[, log_Salary]
+mse <- mean((yhat-hitters.test)^2)
+mse
+```
+__Higher salaries are recieved by players with years more than 4.5. The highest salary is recieved by the player who has more than 4.5 years as experience and hits more than 103.5.The model gives an error of 0.50__
+
+__regression tree using all the variables in the training data set.__
+```{r}
+## Regression tree using all variables on the training data set
+tree.all <- tree(log_Salary~., data = train)
+summary(tree.all)
+
+plot(tree.all)
+text(tree.all, pretty = 0)
+
+
+
+##Boosting with shrinkage parameter λ, and plotting them with MSE values on the train dataset to determine the optimal parameter
+set.seed(42)
+SHP <- seq(0.001, 0.1, by = 0.005)
+Values <- as.data.table(SHP)
+Values$MSE <- NA
+
+for (i in (1:nrow(Values))) {
+  boost.hitters <- gbm(log_Salary~., data = train, distribution = "gaussian", n.trees = 1000, interaction.depth = 6, shrinkage = Values$SHP[i], verbose = F)
+  yhat <- predict(boost.hitters, newdata = train, n.trees = 1000)
+hitters.train <- train[, log_Salary]
+
+Values$MSE[i] <- mean((yhat-hitters.train)^2)
+}
+
+plot(Values$SHP, Values$MSE, type = 'b')
+min(Values$MSE)
+```
+__Lowest error is obtained at 0.09 shrinkage parameter__
+
+__Using the testset with different values of shrinkage parameter and mean square errors plotted accordingly__
+```{r}
+SHP_t <- seq(0.001, 0.1, by = 0.005)
+Values_t <- as.data.table(SHP_t)
+Values_t$MSE_t <- NA
+
+for (i in (1:nrow(Values_t))) {
+  boost.hitters <- gbm(log_Salary~., data = train, distribution = "gaussian", n.trees = 1000, interaction.depth = 6, shrinkage = Values_t$SHP_t[i], verbose = F)
+  yhat <- predict(boost.hitters, newdata = test, n.trees = 1000)
+hitters.test <- test[, log_Salary]
+
+Values_t$MSE_t[i] <- mean((yhat-hitters.test)^2)
+}
+
+plot(Values_t$SHP_t, Values_t$MSE_t, type = 'b')
+min(Values_t$MSE_t)
+
+```
+__Minimum error is shown at shrinkage value of 0.051 with mean square error of 0.007403183.__
+
+__It could be seen that how overfitting the data reduces the MSE to a minimum and also increases the shrinkage parameter__
+
+__Now apply bagging to the training set and predicting accuracy on test data__
+```{r}
+bag.hitters <- randomForest(log_Salary~., data=train,
+                           mtry = 19, importance = TRUE)
+bag.hitters
+
+yhat.bag <- predict(bag.hitters, newdata = test)
+hitters.test <- test[, log_Salary]
+error <- mean((yhat.bag - hitters.test)^2)
+error
+```
+__We can observe how using an emsemble method improves our model prediction capacities as compared to the liner regression model__
